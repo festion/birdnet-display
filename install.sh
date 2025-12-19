@@ -42,10 +42,13 @@ cp "$SOURCE_DIR/requirements.txt" "$INSTALL_DIR/"
 cp "$SOURCE_DIR/run.sh" "$INSTALL_DIR/"
 cp "$SOURCE_DIR/kiosk_launcher.sh" "$INSTALL_DIR/"
 cp "$SOURCE_DIR/cache_builder.py" "$INSTALL_DIR/"
+cp "$SOURCE_DIR/location_manager.py" "$INSTALL_DIR/"
 cp "$SOURCE_DIR/species_list.csv" "$INSTALL_DIR/"
 mkdir -p "$INSTALL_DIR/static"
+mkdir -p "$INSTALL_DIR/utils"
 cp -r "$SOURCE_DIR/static/index.html" "$INSTALL_DIR/static/"
 cp -r "$SOURCE_DIR/static/bird_images_cache" "$INSTALL_DIR/static/"
+cp -r "$SOURCE_DIR/utils/"*.py "$INSTALL_DIR/utils/"
 echo -e "${GREEN}✅ Project files copied.${NC}"
 
 
@@ -138,9 +141,9 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo -e "${YELLOW}This section requires sudo permissions for system changes...${NC}"
 
     # 9.1: Install Kiosk dependencies
-    echo -e "\n${YELLOW}Installing kiosk dependencies (chromium-browser, unclutter)...${NC}"
+    echo -e "\n${YELLOW}Installing kiosk dependencies (chromium, unclutter)...${NC}"
     sudo apt-get update
-    sudo apt-get install -y chromium-browser unclutter
+    sudo apt-get install -y chromium unclutter
 
     # 9.2: Create and enable systemd service to run the app on boot
     echo -e "\n${YELLOW}Creating systemd service to auto-start the application...${NC}"
@@ -172,6 +175,60 @@ EOF
     sudo systemctl start bird-display.service
     echo -e "${GREEN}✅ Systemd service created and enabled.${NC}"
 
+    # 9.2.1: Install Location Manager Service
+    echo -e "\n${YELLOW}Installing Location Manager service...${NC}"
+    LOCATION_SERVICE_FILE="/etc/systemd/system/birdnet-location-manager.service"
+
+    # Create service file with proper paths
+    tee /tmp/birdnet-location-manager.service << EOF
+[Unit]
+Description=BirdNET Display Location Manager
+Documentation=https://github.com/festion/birdnet-display
+After=network-online.target birdnet-go.service
+Wants=network-online.target
+Before=bird-display.service
+
+[Service]
+Type=oneshot
+User=$CURRENT_USER
+Group=$(id -gn "$CURRENT_USER")
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/location_manager.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=birdnet-location-manager
+
+# Success conditions (exit 0 or exit 2 = no changes needed)
+SuccessExitStatus=0 2
+
+# Restart policy (don't restart on success or "no changes needed")
+Restart=on-failure
+RestartSec=10
+StartLimitInterval=300
+StartLimitBurst=3
+
+# Security hardening
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=$INSTALL_DIR /root/birdnet-go-app/config
+
+# Timeout (location detection can take 30-60 seconds)
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    sudo mv /tmp/birdnet-location-manager.service "$LOCATION_SERVICE_FILE"
+
+    echo -e "${YELLOW}Enabling location manager service (will run on boot)...${NC}"
+    sudo systemctl daemon-reload
+    sudo systemctl enable birdnet-location-manager.service
+    echo -e "${GREEN}✅ Location Manager service installed and enabled.${NC}"
+    echo -e "${YELLOW}Note: Location manager will run automatically on next boot.${NC}"
+    echo -e "${YELLOW}      To run manually: sudo systemctl start birdnet-location-manager.service${NC}"
+
     # 9.3: Configure desktop autostart using the more robust .desktop file method
     echo -e "\n${YELLOW}Configuring desktop autostart for kiosk mode...${NC}"
     
@@ -181,8 +238,8 @@ EOF
 #!/bin/bash
 # Add a delay to allow the desktop and network to fully initialize
 sleep 15
-# Launch Chromium
-/usr/bin/chromium-browser --noerrdialogs --disable-infobars --kiosk http://localhost:5000
+# Launch Chromium (use correct binary name for Debian/Raspberry Pi OS)
+/usr/bin/chromium --noerrdialogs --disable-infobars --kiosk http://localhost:5000
 EOF
     chmod +x "$LAUNCHER_SCRIPT"
     echo -e "${GREEN}  - Created kiosk launcher script.${NC}"
